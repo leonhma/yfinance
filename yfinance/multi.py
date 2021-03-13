@@ -22,7 +22,7 @@
 from __future__ import print_function
 
 import time as _time
-import multitasking as _multitasking
+import concurrent.futures as _futures
 import pandas as _pd
 
 from . import Ticker, utils
@@ -81,18 +81,22 @@ def download(tickers, start=None, end=None, actions=False, threads=True,
 
     # download using threads
     if threads:
-        if threads is True:
-            threads = min([len(tickers), _multitasking.cpu_count() * 2])
-        _multitasking.set_max_threads(threads)
-        for i, ticker in enumerate(tickers):
-            _download_one_threaded(ticker, period=period, interval=interval,
-                                   start=start, end=end, prepost=prepost,
-                                   actions=actions, auto_adjust=auto_adjust,
-                                   back_adjust=back_adjust,
-                                   progress=(progress and i > 0), proxy=proxy,
-                                   rounding=rounding)
-        while len(shared._DFS) < len(tickers):
-            _time.sleep(0.01)
+        with _futures.ThreadPoolExecutor() as executor:
+            futures = []
+            for i, ticker in enumerate(tickers):
+                futures.append(
+                    executor.submit(_download_one_threaded, ticker=ticker, period=period,
+                                    interval=interval, start=start, end=end, prepost=prepost,
+                                    actions=actions, auto_adjust=auto_adjust,
+                                    back_adjust=back_adjust,
+                                    progress=(progress and i > 0), proxy=proxy,
+                                    rounding=rounding
+                    )
+                )
+
+            for future in _futures.as_completed(futures):
+                ticker, data = future.result()
+                shared._DFS[ticker.upper()] = data
 
     # download synchronously
     else:
@@ -156,7 +160,6 @@ def _realign_dfs():
             ~shared._DFS[key].index.duplicated(keep='last')]
 
 
-@_multitasking.task
 def _download_one_threaded(ticker, start=None, end=None,
                            auto_adjust=False, back_adjust=False,
                            actions=False, progress=True, period="max",
@@ -165,9 +168,11 @@ def _download_one_threaded(ticker, start=None, end=None,
 
     data = _download_one(ticker, start, end, auto_adjust, back_adjust,
                          actions, period, interval, prepost, proxy, rounding)
-    shared._DFS[ticker.upper()] = data
+
     if progress:
         shared._PROGRESS_BAR.animate()
+
+    return ticker, data
 
 
 def _download_one(ticker, start=None, end=None,
